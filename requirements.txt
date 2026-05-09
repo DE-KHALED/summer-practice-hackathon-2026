@@ -3,3 +3,4 @@ google-genai
 streamlit-folium
 folium
 pillow
+bcrypt

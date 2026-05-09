@@ -26,25 +26,39 @@ if "user_id" not in st.session_state:
 
 # --- login screen ---
 def login_screen():
-    username = st.text_input("Pick a username")
-    col1, col2 = st.columns(2)
-    if col1.button("Log in", use_container_width=True):
-        u = db.get_user_by_name(username)
-        if u:
-            st.session_state.user_id = u["id"]
-            st.session_state.username = u["username"]
-            st.rerun()
-        else:
-            st.error("No such user. Sign up first.")
-    if col2.button("Sign up", use_container_width=True, type="primary"):
-        if username.strip():
-            uid = db.create_user(username.strip())
-            if uid:
-                st.session_state.user_id = uid
-                st.session_state.username = username.strip()
+    mode = st.radio("", ["Log in", "Sign up"], horizontal=True, label_visibility="collapsed")
+    st.caption("💡 Demo users (alex_ro, etc.) all use password: **demo123**")
+    st.divider()
+
+    username = st.text_input("Username")
+    password = st.text_input("Password", type="password")
+
+    if mode == "Sign up":
+        confirm = st.text_input("Confirm password", type="password")
+        if st.button("Sign up", use_container_width=True, type="primary"):
+            if not username.strip():
+                st.error("Username is required.")
+            elif len(password) < 6:
+                st.error("Password must be at least 6 characters.")
+            elif password != confirm:
+                st.error("Passwords don't match.")
+            else:
+                uid = db.create_user(username.strip(), password)
+                if uid:
+                    st.session_state.user_id = uid
+                    st.session_state.username = username.strip()
+                    st.rerun()
+                else:
+                    st.error("Username taken — try another.")
+    else:
+        if st.button("Log in", use_container_width=True, type="primary"):
+            u = db.verify_login(username, password)
+            if u:
+                st.session_state.user_id = u["id"]
+                st.session_state.username = u["username"]
                 st.rerun()
             else:
-                st.error("Username taken.")
+                st.error("Invalid username or password.")
 from datetime import date as dt_date, timedelta
 
 

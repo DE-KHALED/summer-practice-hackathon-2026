@@ -1,4 +1,5 @@
 import sqlite3
+import bcrypt
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -8,6 +9,18 @@ def get_conn():
     conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     return conn
+
+# --- password helpers ---
+def hash_password(password: str) -> str:
+    return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+
+def verify_password(password: str, stored_hash) -> bool:
+    if not stored_hash:
+        return False
+    try:
+        return bcrypt.checkpw(password.encode("utf-8"), stored_hash.encode("utf-8"))
+    except Exception:
+        return False
 
 def init_db():
     conn = get_conn()
@@ -77,13 +90,29 @@ def init_db():
         conn.commit()
     except Exception:
         pass
+    # idempotent migration: add password_hash to users
+    try:
+        conn.execute("ALTER TABLE users ADD COLUMN password_hash TEXT")
+        conn.commit()
+    except Exception:
+        pass
+    # backfill demo123 for any user created before auth was added
+    needs_pw = conn.execute("SELECT COUNT(*) FROM users WHERE password_hash IS NULL").fetchone()[0]
+    if needs_pw:
+        demo_hash = hash_password("demo123")
+        conn.execute("UPDATE users SET password_hash=? WHERE password_hash IS NULL", (demo_hash,))
+        conn.commit()
     conn.close()
 
 # --- user helpers ---
-def create_user(username):
+def create_user(username, password):
     conn = get_conn()
     try:
-        cur = conn.execute("INSERT INTO users (username) VALUES (?)", (username,))
+        pw_hash = hash_password(password)
+        cur = conn.execute(
+            "INSERT INTO users (username, password_hash) VALUES (?, ?)",
+            (username, pw_hash),
+        )
         user_id = cur.lastrowid
         conn.execute("INSERT INTO profiles (user_id) VALUES (?)", (user_id,))
         conn.commit()
@@ -98,6 +127,13 @@ def get_user_by_name(username):
     row = conn.execute("SELECT * FROM users WHERE username = ?", (username,)).fetchone()
     conn.close()
     return dict(row) if row else None
+
+def verify_login(username, password):
+    """Returns user dict on success, None on failure. Never logs passwords."""
+    user = get_user_by_name(username)
+    if user and verify_password(password, user.get("password_hash")):
+        return user
+    return None
 
 def get_profile(user_id):
     conn = get_conn()

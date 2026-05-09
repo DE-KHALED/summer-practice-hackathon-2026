@@ -112,10 +112,14 @@ def seed():
 
     conn = db.get_conn()
 
+    demo_hash = db.hash_password("demo123")
     for user_data in FAKE_USERS:
         uname = user_data["username"]
-        # idempotent user creation
-        conn.execute("INSERT OR IGNORE INTO users (username) VALUES (?)", (uname,))
+        # idempotent user creation — sets password on first insert only
+        conn.execute(
+            "INSERT OR IGNORE INTO users (username, password_hash) VALUES (?, ?)",
+            (uname, demo_hash),
+        )
         conn.commit()
         row = conn.execute("SELECT id FROM users WHERE username=?", (uname,)).fetchone()
         uid = row["id"]
