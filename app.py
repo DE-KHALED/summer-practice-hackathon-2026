@@ -79,7 +79,7 @@ def profile_page():
         if not bio.strip():
             st.warning("Write a bio first!")
         else:
-            with st.spinner("Claude is reading your bio..."):
+            with st.spinner("Gemini is reading your bio..."):
                 from ai import extract_sports_from_bio
                 result = extract_sports_from_bio(bio)
                 if result:
