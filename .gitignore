@@ -1,3 +1,4 @@
 uploads/
 showup.db
 .streamlit/secrets.toml
+__pycache__/
