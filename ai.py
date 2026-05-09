@@ -56,9 +56,9 @@ Only include sports from the available list. Default skill to "beginner" if uncl
             data["skill_level"] = "beginner"
         return data
     except Exception as e:
-        print(f"AI extract error: {e}")
+        import streamlit as st
+        st.error(f"AI extract error: {type(e).__name__}: {e}")
         return None
-
 
 def compute_event_compatibility(members):
     """
