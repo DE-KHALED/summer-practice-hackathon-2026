@@ -4,6 +4,14 @@ import streamlit as st
 SPORTS_LIST = ["Football", "Basketball", "Tennis", "Volleyball",
                "Running", "Cycling", "Padel", "Swimming"]
 
+# Try models in order — first one that doesn't 429 wins
+MODEL_CANDIDATES = [
+    "gemini-flash-latest",
+    "gemini-2.0-flash",
+    "gemini-1.5-flash-8b",
+    "gemini-1.5-flash",
+]
+
 
 def _get_client():
     """Returns a configured Gemini client, or None if unavailable."""
@@ -12,7 +20,6 @@ def _get_client():
         api_key = st.secrets.get("GEMINI_API_KEY")
         if not api_key:
             return None
-        # Initialize the new SDK client
         return genai.Client(api_key=api_key)
     except Exception as e:
         print(f"Gemini init error: {e}")
@@ -23,6 +30,27 @@ def _extract_json(text: str):
     """Strip code fences and parse JSON from model output."""
     text = text.strip().replace("```json", "").replace("```", "").strip()
     return json.loads(text)
+
+
+def _generate(client, prompt: str):
+    """Try each model until one works (handles per-model quota errors)."""
+    last_err = None
+    for model in MODEL_CANDIDATES:
+        try:
+            response = client.models.generate_content(
+                model=model,
+                contents=prompt,
+            )
+            return response.text
+        except Exception as e:
+            last_err = e
+            err_str = str(e)
+            # Only fall through on quota/rate-limit errors; raise on real bugs
+            if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str or "quota" in err_str.lower():
+                continue
+            raise
+    # All models exhausted
+    raise last_err if last_err else RuntimeError("No models available")
 
 
 def extract_sports_from_bio(bio: str):
@@ -44,21 +72,16 @@ Return ONLY valid JSON, no other text, no markdown:
 
 Only include sports from the available list. Default skill to "beginner" if unclear."""
 
-        # Updated generation call syntax and model
-        response = client.models.generate_content(
-            model='gemini-2.5-flash',
-            contents=prompt
-        )
-        
-        data = _extract_json(response.text)
+        text = _generate(client, prompt)
+        data = _extract_json(text)
         data["sports"] = [s for s in data.get("sports", []) if s in SPORTS_LIST]
         if data.get("skill_level") not in ["beginner", "intermediate", "advanced"]:
             data["skill_level"] = "beginner"
         return data
     except Exception as e:
-        import streamlit as st
         st.error(f"AI extract error: {type(e).__name__}: {e}")
         return None
+
 
 def compute_event_compatibility(members):
     """
@@ -86,13 +109,8 @@ Return ONLY valid JSON, no markdown:
 
 Score 0-100. Pick 1-2 best pairs. Reason must be one short sentence."""
 
-        # Updated generation call syntax and model
-        response = client.models.generate_content(
-            model='gemini-2.5-flash',
-            contents=prompt
-        )
-        
-        data = _extract_json(response.text)
+        text = _generate(client, prompt)
+        data = _extract_json(text)
         score = int(data.get("score", 50))
         score = max(0, min(100, score))
         return {
@@ -101,5 +119,5 @@ Score 0-100. Pick 1-2 best pairs. Reason must be one short sentence."""
             "best_pairs": data.get("best_pairs", [])[:2],
         }
     except Exception as e:
-        print(f"AI compatibility error: {e}")
+        st.error(f"AI compatibility error: {type(e).__name__}: {e}")
         return None
