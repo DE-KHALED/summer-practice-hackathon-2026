@@ -5,8 +5,19 @@ from datetime import date as dt_date, timedelta
 st.set_page_config(page_title="ShowUp2Move", page_icon="🏃", layout="centered")
 db.init_db()
 
+st.markdown(
+    "<h1 style='margin-bottom:0;'>🏃 ShowUp2Move</h1>"
+    "<p style='color:#888;margin-top:0;font-size:0.95em;'>Spontaneous sports. Just show up.</p>",
+    unsafe_allow_html=True,
+)
+
 SPORTS = ["Football", "Basketball", "Tennis", "Volleyball", "Running", "Cycling", "Padel", "Swimming"]
 SKILLS = ["beginner", "intermediate", "advanced"]
+
+def _fmt_dt(date_str, time_window=None):
+    d = dt_date.fromisoformat(date_str)
+    s = d.strftime("%a %d %b")
+    return f"{s} · {time_window}" if time_window else s
 
 # --- session ---
 if "user_id" not in st.session_state:
@@ -15,8 +26,6 @@ if "user_id" not in st.session_state:
 
 # --- login screen ---
 def login_screen():
-    st.title("🏃 ShowUp2Move")
-    st.caption("Spontaneous sports with people nearby. Just show up.")
     username = st.text_input("Pick a username")
     col1, col2 = st.columns(2)
     if col1.button("Log in", use_container_width=True):
@@ -87,7 +96,7 @@ def profile_page():
         db.update_profile(st.session_state.user_id, bio, ",".join(sports), skill, photo_path)
         st.session_state.pop("ai_sports", None)
         st.session_state.pop("ai_skill", None)
-        st.success("Saved!")
+        st.toast("✅ Profile saved!")
         st.rerun()
 
 
@@ -135,7 +144,7 @@ def showup_page():
     st.subheader("Your upcoming availability")
     avail = db.get_user_availability(st.session_state.user_id)
     if not avail:
-        st.info("No availability set yet.")
+        st.info("🗓️ Pick a sport above to get started.")
     else:
         for a in sorted(avail, key=lambda x: (x["date"], x["time_window"])):
             d = dt_date.fromisoformat(a["date"])
@@ -148,7 +157,7 @@ def my_events_page():
     events = db.get_user_events(st.session_state.user_id)
 
     if not events:
-        st.info("No events yet. Set your availability and wait for a match!")
+        st.info("👀 No matches yet! Head to **Show up today** to set your availability and get matched.")
         return
 
     today = dt_date.today().isoformat()
@@ -166,7 +175,7 @@ def my_events_page():
             with col1:
                 if action_needed:
                     st.warning("🔔 Action needed")
-                st.subheader(f"{e['sport']} — {e['date']} ({e['time_window']})")
+                st.subheader(f"{e['sport']} — {_fmt_dt(e['date'], e['time_window'])}")
                 st.caption(f"👑 Captain: {captain_name}")
                 member_names = [
                     m["username"] + (" 👑" if m["user_id"] == e["captain_id"] else "")
@@ -186,9 +195,11 @@ def my_events_page():
                     else:
                         if st.button("✅ Confirm", key=f"confirm_{e['id']}", use_container_width=True):
                             db.update_event_member_confirmation(e["id"], st.session_state.user_id, 1)
+                            st.toast("👍 You're confirmed!")
                             st.rerun()
                         if st.button("❌ Decline", key=f"decline_{e['id']}", use_container_width=True):
                             db.update_event_member_confirmation(e["id"], st.session_state.user_id, 0)
+                            st.toast("Got it, marked as declined.")
                             st.rerun()
                 if st.button("👁️ Open", key=f"view_{e['id']}", use_container_width=True, type="primary"):
                     st.session_state.selected_event_id = e["id"]
@@ -227,16 +238,20 @@ def event_detail_page():
         st.session_state.page = "my_events"
         st.rerun()
 
-    st.header(f"{e['sport']} — {e['date']} ({e['time_window']})")
+    st.header(f"{e['sport']} — {_fmt_dt(e['date'], e['time_window'])}")
     st.caption(f"👑 Captain: {captain_name} · Status: {e['status']}")
+    if e.get("proximity_matched"):
+        st.caption("📍 Matched by proximity")
 
     # member list
     st.subheader("Members")
     cols = st.columns(min(len(members), 4))
     for i, m in enumerate(members):
         confirmed_icon = "✅" if m["confirmed"] else "⏳"
-        crown = " 👑" if m["user_id"] == e["captain_id"] else ""
-        cols[i % len(cols)].write(f"{confirmed_icon} {m['username']}{crown}")
+        if m["user_id"] == e["captain_id"]:
+            cols[i % len(cols)].markdown(f"{confirmed_icon} 👑 **{m['username']}** · Captain")
+        else:
+            cols[i % len(cols)].write(f"{confirmed_icon} {m['username']}")
 
     # venue display
     from venues import VENUES
@@ -270,7 +285,7 @@ def event_detail_page():
             selected_venue = sport_venues[venue_labels.index(selected_label)]
             if st.button("📌 Set venue", type="primary"):
                 db.update_event_venue(event_id, selected_venue["id"])
-                st.success("Venue set!")
+                st.toast("📍 Venue set!")
                 st.rerun()
         else:
             st.info("No hardcoded venues for this sport — add one to venues.py.")
@@ -286,7 +301,7 @@ def event_detail_page():
 
     if compat_key not in st.session_state:
         member_profiles = db.get_event_members_profiles(event_id)
-        with st.spinner("Computing compatibility…"):
+        with st.spinner("Reading bios..."):
             from ai import compute_event_compatibility
             st.session_state[compat_key] = compute_event_compatibility(member_profiles)
 
@@ -305,6 +320,8 @@ def event_detail_page():
     st.divider()
     st.subheader("💬 Group Chat")
     messages = db.get_event_messages(event_id)
+    if not messages:
+        st.caption("💬 No messages yet — be the first to say hi!")
     for msg in messages:
         with st.chat_message("user"):
             st.markdown(f"**{msg['username']}**: {msg['content']}")
@@ -346,9 +363,10 @@ else:
         admin_window = st.selectbox("Time window", ["morning", "afternoon", "evening"], key="admin_window")
         if st.button("▶ Run Matching Now", use_container_width=True, type="primary"):
             from matching import run_matching
-            event_ids = run_matching(admin_date.isoformat(), admin_window)
+            with st.spinner("Finding matches..."):
+                event_ids = run_matching(admin_date.isoformat(), admin_window)
             if event_ids:
-                st.success(f"✅ Created {len(event_ids)} event(s)!")
+                st.toast(f"🎯 Created {len(event_ids)} event(s)!")
             else:
                 st.warning("No matches — not enough players for any sport.")
 

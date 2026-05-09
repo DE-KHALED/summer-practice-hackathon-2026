@@ -71,6 +71,12 @@ def init_db():
     );
     """)
     conn.commit()
+    # idempotent migration: add proximity_matched to events if it doesn't exist yet
+    try:
+        conn.execute("ALTER TABLE events ADD COLUMN proximity_matched INTEGER DEFAULT 0")
+        conn.commit()
+    except Exception:
+        pass
     conn.close()
 
 # --- user helpers ---
@@ -157,20 +163,21 @@ def get_all_availability(date, sport=None):
 
 def get_all_availability_for_matching(date, time_window):
     conn = get_conn()
-    rows = conn.execute("""SELECT a.*, u.username
+    rows = conn.execute("""SELECT a.*, u.username, p.lat, p.lng
                            FROM availability a
                            JOIN users u ON a.user_id = u.id
+                           JOIN profiles p ON a.user_id = p.user_id
                            WHERE a.date=? AND a.time_window=?""",
                         (date, time_window)).fetchall()
     conn.close()
     return [dict(r) for r in rows]
 
 # --- event helpers ---
-def create_event(sport, date, time_window, captain_id):
+def create_event(sport, date, time_window, captain_id, proximity_matched=0):
     conn = get_conn()
-    cur = conn.execute("""INSERT INTO events (sport, date, time_window, captain_id, status)
-                          VALUES (?,?,?,?,'pending')""",
-                       (sport, date, time_window, captain_id))
+    cur = conn.execute("""INSERT INTO events (sport, date, time_window, captain_id, status, proximity_matched)
+                          VALUES (?,?,?,?,'pending',?)""",
+                       (sport, date, time_window, captain_id, proximity_matched))
     event_id = cur.lastrowid
     conn.commit()
     conn.close()
