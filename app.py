@@ -240,8 +240,7 @@ def event_detail_page():
 
     st.header(f"{e['sport']} — {_fmt_dt(e['date'], e['time_window'])}")
     st.caption(f"👑 Captain: {captain_name} · Status: {e['status']}")
-    if e.get("proximity_matched"):
-        st.caption("📍 Matched by proximity")
+    st.caption("📍 Matched by proximity")
 
     # member list
     st.subheader("Members")
@@ -316,6 +315,29 @@ def event_detail_page():
         if compat.get("best_pairs"):
             st.caption("Best matches: " + ", ".join(compat["best_pairs"]))
 
+    # suggested teams (Football with >= 6 members)
+    if e["sport"] == "Football" and len(members) >= 6:
+        st.divider()
+        st.subheader("⚖️ Suggested teams")
+        _SKILL_PTS   = {"advanced": 3, "intermediate": 2, "beginner": 1}
+        _SKILL_BADGE = {"advanced": "🟢 advanced", "intermediate": "🟡 intermediate", "beginner": "🔴 beginner"}
+        _profiles = db.get_event_members_profiles(event_id)
+        _sorted  = sorted(_profiles, key=lambda m: _SKILL_PTS.get(m["skill_level"], 1), reverse=True)
+        team_a, team_b = [], []
+        for _i, _m in enumerate(_sorted):
+            (team_a if _i % 4 in (0, 3) else team_b).append(_m)
+        col_a, col_b = st.columns(2)
+        with col_a:
+            st.markdown("**Team A**")
+            for _m in team_a:
+                st.write(f"{_m['username']} · {_SKILL_BADGE.get(_m['skill_level'], _m['skill_level'])}")
+        with col_b:
+            st.markdown("**Team B**")
+            for _m in team_b:
+                st.write(f"{_m['username']} · {_SKILL_BADGE.get(_m['skill_level'], _m['skill_level'])}")
+        with st.expander("Why?"):
+            st.write("Teams balanced by skill level using snake draft.")
+
     # group chat
     st.divider()
     st.subheader("💬 Group Chat")
@@ -333,6 +355,56 @@ def event_detail_page():
         st.rerun()
 
 
+# --- discover page ---
+def discover_page():
+    st.header("🗺️ Discover Events")
+    st.caption("Upcoming matches you can join.")
+
+    events = db.get_discoverable_events(st.session_state.user_id)
+
+    if not events:
+        st.info("🏆 No open events right now — check back after the next matching run!")
+        return
+
+    from matching import SPORT_SIZES
+
+    try:
+        import folium
+        from streamlit_folium import st_folium
+        fmap = folium.Map(location=[44.4268, 26.1025], zoom_start=12)
+        for e in events:
+            lat = e.get("venue_lat") or 44.4268
+            lng = e.get("venue_lng") or 26.1025
+            tip = (f"{e['sport']} · {_fmt_dt(e['date'], e['time_window'])} "
+                   f"· {e['member_count']} players · 👑 {e['captain_username']}")
+            folium.Marker(
+                [lat, lng],
+                tooltip=tip,
+                icon=folium.Icon(color="blue", icon="flag"),
+            ).add_to(fmap)
+        st_folium(fmap, width=700, height=400)
+    except Exception:
+        st.info("Map unavailable.")
+
+    st.divider()
+    for e in events:
+        with st.container(border=True):
+            col1, col2 = st.columns([3, 1])
+            with col1:
+                st.subheader(f"{e['sport']} — {_fmt_dt(e['date'], e['time_window'])}")
+                st.caption(f"👑 {e['captain_username']} · {e['member_count']} players")
+            with col2:
+                _, max_size = SPORT_SIZES.get(e["sport"], (2, 8))
+                if st.button("➕ Request to join", key=f"join_{e['id']}",
+                             use_container_width=True, type="primary"):
+                    if e["member_count"] >= max_size:
+                        st.toast("Event is full!")
+                    else:
+                        db.add_event_member(e["id"], st.session_state.user_id)
+                        st.toast("🎉 You're in! Check My Events.")
+                        st.rerun()
+
+
 # --- main router ---
 if not st.session_state.user_id:
     login_screen()
@@ -347,6 +419,9 @@ else:
 
         if st.button("🏃 Show Up Today", use_container_width=True):
             st.session_state.page = "showup"
+            st.rerun()
+        if st.button("🗺️ Discover", use_container_width=True):
+            st.session_state.page = "discover"
             st.rerun()
         if st.button("👤 My Profile", use_container_width=True):
             st.session_state.page = "profile"
@@ -379,6 +454,8 @@ else:
     page = st.session_state.get("page", "showup")
     if page == "showup":
         showup_page()
+    elif page == "discover":
+        discover_page()
     elif page == "profile":
         profile_page()
     elif page == "my_events":

@@ -229,6 +229,30 @@ def get_event_members_profiles(event_id):
     conn.close()
     return [dict(r) for r in rows]
 
+def get_discoverable_events(user_id):
+    """Events the user is NOT a member of, date >= today, with captain name, member count, venue lat/lng."""
+    conn = get_conn()
+    today = datetime.today().strftime("%Y-%m-%d")
+    rows = conn.execute("""
+        SELECT e.*,
+               u.username  AS captain_username,
+               COUNT(em.user_id) AS member_count,
+               v.lat       AS venue_lat,
+               v.lng       AS venue_lng
+        FROM events e
+        JOIN users u ON e.captain_id = u.id
+        JOIN event_members em ON e.id = em.event_id
+        LEFT JOIN venues v ON e.venue_id = v.id
+        WHERE e.date >= ?
+          AND e.id NOT IN (
+              SELECT event_id FROM event_members WHERE user_id = ?
+          )
+        GROUP BY e.id
+        ORDER BY e.date ASC, e.time_window ASC
+    """, (today, user_id)).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
 def count_pending_for_user(user_id):
     """Count of future/today events where user hasn't confirmed."""
     conn = get_conn()
