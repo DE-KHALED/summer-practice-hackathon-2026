@@ -1,112 +1,122 @@
 import json
 import streamlit as st
-from google import genai
 
-# Configuration
 SPORTS_LIST = ["Football", "Basketball", "Tennis", "Volleyball",
                "Running", "Cycling", "Padel", "Swimming"]
 
-# Ordered by most likely to have free quota / stability
+# Try models in order — first one that doesn't 429 wins
 MODEL_CANDIDATES = [
-    "gemini-2.0-flash-lite",
+    "gemini-flash-latest",
+    "gemini-2.0-flash",
     "gemini-1.5-flash-8b",
     "gemini-1.5-flash",
-    "gemini-2.0-flash",
 ]
 
+
 def _get_client():
-    """Initializes the Gemini client using Streamlit secrets."""
-    api_key = st.secrets.get("GEMINI_API_KEY")
-    if not api_key:
-        return None
+    """Returns a configured Gemini client, or None if unavailable."""
     try:
+        from google import genai
+        api_key = st.secrets.get("GEMINI_API_KEY")
+        if not api_key:
+            return None
         return genai.Client(api_key=api_key)
-    except Exception:
+    except Exception as e:
+        print(f"Gemini init error: {e}")
         return None
+
 
 def _extract_json(text: str):
-    """Cleans and parses JSON from AI string output."""
-    clean_text = text.strip().replace("```json", "").replace("```", "").strip()
-    return json.loads(clean_text)
+    """Strip code fences and parse JSON from model output."""
+    text = text.strip().replace("```json", "").replace("```", "").strip()
+    return json.loads(text)
 
-def _generate_with_retry(client, prompt: str):
-    """Loops through model candidates to find one with available quota."""
+
+def _generate(client, prompt: str):
+    """Try each model until one works (handles per-model quota errors)."""
     last_err = None
     for model in MODEL_CANDIDATES:
         try:
-            response = client.models.generate_content(model=model, contents=prompt)
+            response = client.models.generate_content(
+                model=model,
+                contents=prompt,
+            )
             return response.text
         except Exception as e:
             last_err = e
-            # If it's not a quota issue (429), stop and report the real bug
-            if "429" not in str(e) and "RESOURCE_EXHAUSTED" not in str(e):
-                break
-            continue
-    raise last_err or RuntimeError("All models exhausted or unavailable.")
+            err_str = str(e)
+            # Only fall through on quota/rate-limit errors; raise on real bugs
+            if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str or "quota" in err_str.lower():
+                continue
+            raise
+    raise last_err if last_err else RuntimeError("No models available")
 
-@st.cache_data(show_spinner="AI is analyzing the bio...")
+
 def extract_sports_from_bio(bio: str):
-    """Analyzes a user bio to determine sports and skill level."""
+    """Returns dict {sports: [...], skill_level: '...'} or None on failure."""
     if not bio.strip():
         return None
-    
     client = _get_client()
-    if not client:
-        st.error("Gemini API key not configured.")
+    if client is None:
+        return None
+    try:
+        prompt = f"""Extract sports interests and skill level from this bio.
+Bio: "{bio}"
+
+Available sports: {", ".join(SPORTS_LIST)}
+Skill levels: beginner, intermediate, advanced
+
+Return ONLY valid JSON, no other text, no markdown:
+{{"sports": ["Sport1", "Sport2"], "skill_level": "beginner"}}
+
+Only include sports from the available list. Default skill to "beginner" if unclear."""
+
+        text = _generate(client, prompt)
+        data = _extract_json(text)
+        data["sports"] = [s for s in data.get("sports", []) if s in SPORTS_LIST]
+        if data.get("skill_level") not in ["beginner", "intermediate", "advanced"]:
+            data["skill_level"] = "beginner"
+        return data
+    except Exception as e:
+        print(f"AI extract error: {type(e).__name__}: {e}")
         return None
 
-    prompt = f"""Extract sports interests and skill level from this bio.
-    Bio: "{bio}"
-    Available sports: {", ".join(SPORTS_LIST)}
-    Skill levels: beginner, intermediate, advanced
 
-    Return ONLY valid JSON:
-    {{"sports": ["Sport1"], "skill_level": "beginner"}}
-    """
-
-    try:
-        text = _generate_with_retry(client, prompt)
-        data = _extract_json(text)
-        
-        # Validation & Cleanup
-        detected_sports = [s for s in data.get("sports", []) if s in SPORTS_LIST]
-        skill = data.get("skill_level", "beginner").lower()
-        if skill not in ["beginner", "intermediate", "advanced"]:
-            skill = "beginner"
-            
-        return {"sports": detected_sports, "skill_level": skill}
-    except Exception as e:
-        st.warning(f"AI Extraction unavailable: {e}")
-        return {"sports": [], "skill_level": "beginner"}
-
-@st.cache_data(show_spinner="Calculating group chemistry...")
 def compute_event_compatibility(members):
-    """Calculates a compatibility score for a group of users."""
+    """
+    members: list of dicts with keys username, bio, sports, skill_level
+    Returns: {"score": int, "reason": str, "best_pairs": [str, ...]} or None
+    """
     if not members or len(members) < 2:
         return None
-
     client = _get_client()
-    if not client:
+    if client is None:
         return None
-
-    member_summary = "\n".join([
-        f"- {m['username']}: {m['skill_level']}, {m['sports']}" for m in members
-    ])
-
-    prompt = f"""Rate the compatibility (0-100) for this sports group:
-    {member_summary}
-
-    Return ONLY valid JSON:
-    {{"score": 85, "reason": "Short explanation.", "best_pairs": ["user1 & user2"]}}
-    """
-
     try:
-        text = _generate_with_retry(client, prompt)
+        member_text = "\n".join([
+            f"- {m['username']}: skill={m['skill_level']}, sports={m['sports']}, bio=\"{m['bio'][:200]}\""
+            for m in members
+        ])
+        prompt = f"""Rate the compatibility of this sports group from 0 to 100,
+based on shared interests, similar skill levels, and bio vibes.
+
+Group:
+{member_text}
+
+Return ONLY valid JSON, no markdown:
+{{"score": 87, "reason": "one short sentence", "best_pairs": ["user1 & user2"]}}
+
+Score 0-100. Pick 1-2 best pairs. Reason must be one short sentence."""
+
+        text = _generate(client, prompt)
         data = _extract_json(text)
+        score = int(data.get("score", 50))
+        score = max(0, min(100, score))
         return {
-            "score": max(0, min(100, int(data.get("score", 50)))),
-            "reason": data.get("reason", "Good match."),
-            "best_pairs": data.get("best_pairs", [])[:2]
+            "score": score,
+            "reason": data.get("reason", "Group looks reasonable."),
+            "best_pairs": data.get("best_pairs", [])[:2],
         }
-    except Exception:
-        return {"score": 50, "reason": "Could not calculate score.", "best_pairs": []}
+    except Exception as e:
+        print(f"AI compatibility error: {type(e).__name__}: {e}")
+        return None
