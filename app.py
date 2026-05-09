@@ -1,0 +1,371 @@
+import streamlit as st
+from pathlib import Path
+import db
+from datetime import date as dt_date, timedelta
+st.set_page_config(page_title="ShowUp2Move", page_icon="🏃", layout="centered")
+db.init_db()
+
+SPORTS = ["Football", "Basketball", "Tennis", "Volleyball", "Running", "Cycling", "Padel", "Swimming"]
+SKILLS = ["beginner", "intermediate", "advanced"]
+
+# --- session ---
+if "user_id" not in st.session_state:
+    st.session_state.user_id = None
+    st.session_state.username = None
+
+# --- login screen ---
+def login_screen():
+    st.title("🏃 ShowUp2Move")
+    st.caption("Spontaneous sports with people nearby. Just show up.")
+    username = st.text_input("Pick a username")
+    col1, col2 = st.columns(2)
+    if col1.button("Log in", use_container_width=True):
+        u = db.get_user_by_name(username)
+        if u:
+            st.session_state.user_id = u["id"]
+            st.session_state.username = u["username"]
+            st.rerun()
+        else:
+            st.error("No such user. Sign up first.")
+    if col2.button("Sign up", use_container_width=True, type="primary"):
+        if username.strip():
+            uid = db.create_user(username.strip())
+            if uid:
+                st.session_state.user_id = uid
+                st.session_state.username = username.strip()
+                st.rerun()
+            else:
+                st.error("Username taken.")
+from datetime import date as dt_date, timedelta
+
+
+# --- profile page ---
+def profile_page():
+    st.header("Your profile")
+    p = db.get_profile(st.session_state.user_id)
+
+    bio = st.text_area("Tell us about yourself",
+                       value=p["bio"],
+                       placeholder="e.g. I love football and weekend tennis. Played volleyball in college.",
+                       height=100,
+                       key="bio_input")
+
+    # AI extraction
+    col_ai1, col_ai2 = st.columns([1, 2])
+    if col_ai1.button("✨ Auto-detect from bio", use_container_width=True):
+        if not bio.strip():
+            st.warning("Write a bio first!")
+        else:
+            with st.spinner("Claude is reading your bio..."):
+                from ai import extract_sports_from_bio
+                result = extract_sports_from_bio(bio)
+                if result:
+                    st.session_state.ai_sports = result["sports"]
+                    st.session_state.ai_skill = result["skill_level"]
+                    st.success(f"Detected: {', '.join(result['sports'])} · {result['skill_level']}")
+                else:
+                    st.error("AI unavailable — fill manually.")
+
+    current_sports = st.session_state.get("ai_sports") or [s for s in p["sports"].split(",") if s]
+    sports = st.multiselect("Sports you play", SPORTS, default=current_sports)
+
+    default_skill = st.session_state.get("ai_skill") or (p["skill_level"] if p["skill_level"] in SKILLS else "beginner")
+    skill = st.select_slider("Skill level", SKILLS, value=default_skill)
+
+    photo = st.file_uploader("Profile photo (optional)", type=["png", "jpg", "jpeg"])
+    photo_path = None
+    if photo:
+        Path("uploads").mkdir(exist_ok=True)
+        photo_path = f"uploads/{st.session_state.user_id}_{photo.name}"
+        with open(photo_path, "wb") as f:
+            f.write(photo.read())
+
+    if p["photo_path"]:
+        st.image(p["photo_path"], width=120)
+
+    if st.button("💾 Save profile", type="primary"):
+        db.update_profile(st.session_state.user_id, bio, ",".join(sports), skill, photo_path)
+        st.session_state.pop("ai_sports", None)
+        st.session_state.pop("ai_skill", None)
+        st.success("Saved!")
+        st.rerun()
+
+
+def showup_page():
+    st.header("🏃 Show up today?")
+    st.caption("Tell us when you're free. We'll match you with people who want to play.")
+
+    p = db.get_profile(st.session_state.user_id)
+    user_sports = [s for s in p["sports"].split(",") if s]
+
+    if not user_sports:
+        st.warning("Add some sports to your profile first!")
+        return
+
+    # date picker — today and next 6 days
+    today = dt_date.today()
+    date_options = [(today + timedelta(days=i)) for i in range(7)]
+    date_labels = [d.strftime("%a %d %b") for d in date_options]
+    date_idx = st.radio("When?", range(7),
+                        format_func=lambda i: date_labels[i],
+                        horizontal=True)
+    selected_date = date_options[date_idx].isoformat()
+
+    time_window = st.radio("Time of day",
+                           ["morning", "afternoon", "evening"],
+                           horizontal=True,
+                           format_func=lambda x: {
+                               "morning": "🌅 Morning",
+                               "afternoon": "☀️ Afternoon",
+                               "evening": "🌆 Evening"
+                           }[x])
+
+    st.divider()
+    st.subheader("Which sports are you up for?")
+
+    cols = st.columns(min(len(user_sports), 3))
+    for i, sport in enumerate(user_sports):
+        with cols[i % len(cols)]:
+            if st.button(f"✅ {sport}", key=f"yes_{sport}", use_container_width=True):
+                db.add_availability(st.session_state.user_id, sport, selected_date, time_window)
+                st.toast(f"You're in for {sport} on {date_labels[date_idx]} {time_window}!", icon="🎉")
+
+    # show current availability
+    st.divider()
+    st.subheader("Your upcoming availability")
+    avail = db.get_user_availability(st.session_state.user_id)
+    if not avail:
+        st.info("No availability set yet.")
+    else:
+        for a in sorted(avail, key=lambda x: (x["date"], x["time_window"])):
+            d = dt_date.fromisoformat(a["date"])
+            st.write(f"• **{a['sport']}** — {d.strftime('%a %d %b')} ({a['time_window']})")
+
+
+# --- my events page ---
+def my_events_page():
+    st.header("🗓️ My Events")
+    events = db.get_user_events(st.session_state.user_id)
+
+    if not events:
+        st.info("No events yet. Set your availability and wait for a match!")
+        return
+
+    today = dt_date.today().isoformat()
+    upcoming = [e for e in events if e["date"] >= today]
+    past = [e for e in events if e["date"] < today]
+    pending_ids = db.get_user_pending_event_ids(st.session_state.user_id)
+
+    def render_event_card(e, action_needed=False):
+        members = db.get_event_members_detail(e["id"])
+        captain = next((m for m in members if m["user_id"] == e["captain_id"]), None)
+        captain_name = captain["username"] if captain else "Unknown"
+
+        with st.container(border=True):
+            col1, col2 = st.columns([3, 1])
+            with col1:
+                if action_needed:
+                    st.warning("🔔 Action needed")
+                st.subheader(f"{e['sport']} — {e['date']} ({e['time_window']})")
+                st.caption(f"👑 Captain: {captain_name}")
+                member_names = [
+                    m["username"] + (" 👑" if m["user_id"] == e["captain_id"] else "")
+                    for m in members
+                ]
+                st.write("Players: " + ", ".join(member_names))
+                if e["venue_id"]:
+                    from venues import VENUES
+                    venue = next((v for v in VENUES if v["id"] == e["venue_id"]), None)
+                    if venue:
+                        st.write(f"📍 {venue['name']}")
+            with col2:
+                my_status = next((m for m in members if m["user_id"] == st.session_state.user_id), None)
+                if my_status:
+                    if my_status["confirmed"]:
+                        st.success("✅ Confirmed")
+                    else:
+                        if st.button("✅ Confirm", key=f"confirm_{e['id']}", use_container_width=True):
+                            db.update_event_member_confirmation(e["id"], st.session_state.user_id, 1)
+                            st.rerun()
+                        if st.button("❌ Decline", key=f"decline_{e['id']}", use_container_width=True):
+                            db.update_event_member_confirmation(e["id"], st.session_state.user_id, 0)
+                            st.rerun()
+                if st.button("👁️ Open", key=f"view_{e['id']}", use_container_width=True, type="primary"):
+                    st.session_state.selected_event_id = e["id"]
+                    st.session_state.page = "event_detail"
+                    st.rerun()
+
+    if upcoming:
+        st.subheader("Upcoming")
+        for e in sorted(upcoming, key=lambda x: (x["id"] not in pending_ids, x["date"], x["time_window"])):
+            render_event_card(e, action_needed=e["id"] in pending_ids)
+
+    if past:
+        st.subheader("Past")
+        for e in sorted(past, key=lambda x: (x["date"], x["time_window"]), reverse=True):
+            render_event_card(e)
+
+
+# --- event detail page ---
+def event_detail_page():
+    event_id = st.session_state.get("selected_event_id")
+    if not event_id:
+        st.error("No event selected.")
+        return
+
+    e = db.get_event(event_id)
+    if not e:
+        st.error("Event not found.")
+        return
+
+    members = db.get_event_members_detail(event_id)
+    captain = next((m for m in members if m["user_id"] == e["captain_id"]), None)
+    captain_name = captain["username"] if captain else "Unknown"
+    is_captain = e["captain_id"] == st.session_state.user_id
+
+    if st.button("← Back to My Events"):
+        st.session_state.page = "my_events"
+        st.rerun()
+
+    st.header(f"{e['sport']} — {e['date']} ({e['time_window']})")
+    st.caption(f"👑 Captain: {captain_name} · Status: {e['status']}")
+
+    # member list
+    st.subheader("Members")
+    cols = st.columns(min(len(members), 4))
+    for i, m in enumerate(members):
+        confirmed_icon = "✅" if m["confirmed"] else "⏳"
+        crown = " 👑" if m["user_id"] == e["captain_id"] else ""
+        cols[i % len(cols)].write(f"{confirmed_icon} {m['username']}{crown}")
+
+    # venue display
+    from venues import VENUES
+    if e["venue_id"]:
+        venue = next((v for v in VENUES if v["id"] == e["venue_id"]), None)
+        if venue:
+            st.divider()
+            st.subheader("📍 Venue")
+            st.write(f"**{venue['name']}**")
+            st.caption(f"{venue['address']} · {venue['price_per_hour']} RON/hr")
+            try:
+                import folium
+                from streamlit_folium import st_folium
+                m_map = folium.Map(location=[venue["lat"], venue["lng"]], zoom_start=15)
+                folium.Marker(
+                    [venue["lat"], venue["lng"]], popup=venue["name"],
+                    icon=folium.Icon(color="red", icon="info-sign")
+                ).add_to(m_map)
+                st_folium(m_map, width=680, height=280)
+            except Exception:
+                st.write(f"Map unavailable — lat: {venue['lat']}, lng: {venue['lng']}")
+
+    # captain: pick venue
+    if is_captain:
+        st.divider()
+        st.subheader("🏟️ Pick Venue (Captain only)")
+        sport_venues = [v for v in VENUES if e["sport"] in v["sport_types"]]
+        if sport_venues:
+            venue_labels = [f"{v['name']} ({v['price_per_hour']} RON/hr)" for v in sport_venues]
+            selected_label = st.selectbox("Choose venue", venue_labels, key="venue_pick")
+            selected_venue = sport_venues[venue_labels.index(selected_label)]
+            if st.button("📌 Set venue", type="primary"):
+                db.update_event_venue(event_id, selected_venue["id"])
+                st.success("Venue set!")
+                st.rerun()
+        else:
+            st.info("No hardcoded venues for this sport — add one to venues.py.")
+
+    # group compatibility
+    st.divider()
+    compat_key = f"compat_{event_id}"
+    col_title, col_btn = st.columns([5, 1])
+    col_title.subheader("✨ Group Compatibility")
+    if col_btn.button("🔄 Recompute", key=f"recompute_{event_id}"):
+        st.session_state.pop(compat_key, None)
+        st.rerun()
+
+    if compat_key not in st.session_state:
+        member_profiles = db.get_event_members_profiles(event_id)
+        with st.spinner("Computing compatibility…"):
+            from ai import compute_event_compatibility
+            st.session_state[compat_key] = compute_event_compatibility(member_profiles)
+
+    compat = st.session_state[compat_key]
+    if compat is None:
+        st.info("AI compatibility unavailable.")
+    else:
+        score = compat["score"]
+        color = "green" if score > 75 else ("orange" if score >= 50 else "red")
+        st.markdown(f"<h2 style='color:{color}'>{score}/100</h2>", unsafe_allow_html=True)
+        st.write(compat["reason"])
+        if compat.get("best_pairs"):
+            st.caption("Best matches: " + ", ".join(compat["best_pairs"]))
+
+    # group chat
+    st.divider()
+    st.subheader("💬 Group Chat")
+    messages = db.get_event_messages(event_id)
+    for msg in messages:
+        with st.chat_message("user"):
+            st.markdown(f"**{msg['username']}**: {msg['content']}")
+            st.caption(msg["created_at"])
+
+    chat_input = st.chat_input("Say something to the group…")
+    if chat_input:
+        db.add_message(event_id, st.session_state.user_id, chat_input)
+        st.rerun()
+
+
+# --- main router ---
+if not st.session_state.user_id:
+    login_screen()
+else:
+    if "page" not in st.session_state:
+        st.session_state.page = "showup"
+
+    with st.sidebar:
+        st.title("🏃 ShowUp2Move")
+        st.caption(f"👤 {st.session_state.username}")
+        st.divider()
+
+        if st.button("🏃 Show Up Today", use_container_width=True):
+            st.session_state.page = "showup"
+            st.rerun()
+        if st.button("👤 My Profile", use_container_width=True):
+            st.session_state.page = "profile"
+            st.rerun()
+        _pending = db.count_pending_for_user(st.session_state.user_id)
+        _events_label = f"🗓️ My Events ({_pending})" if _pending > 0 else "🗓️ My Events"
+        if st.button(_events_label, use_container_width=True):
+            st.session_state.page = "my_events"
+            st.rerun()
+
+        st.divider()
+        st.caption("⚡ Admin / Demo")
+        admin_date = st.date_input("Match date", value=dt_date.today(), key="admin_date")
+        admin_window = st.selectbox("Time window", ["morning", "afternoon", "evening"], key="admin_window")
+        if st.button("▶ Run Matching Now", use_container_width=True, type="primary"):
+            from matching import run_matching
+            event_ids = run_matching(admin_date.isoformat(), admin_window)
+            if event_ids:
+                st.success(f"✅ Created {len(event_ids)} event(s)!")
+            else:
+                st.warning("No matches — not enough players for any sport.")
+
+        st.divider()
+        if st.button("🚪 Log out", use_container_width=True):
+            for k in ["user_id", "username", "page", "selected_event_id", "ai_sports", "ai_skill"]:
+                st.session_state.pop(k, None)
+            st.rerun()
+
+    page = st.session_state.get("page", "showup")
+    if page == "showup":
+        showup_page()
+    elif page == "profile":
+        profile_page()
+    elif page == "my_events":
+        my_events_page()
+    elif page == "event_detail":
+        event_detail_page()
+    else:
+        showup_page()
