@@ -4,7 +4,7 @@
 
 A smart social sports-matching platform that turns "I want to play today" into a real organized game in 30 seconds. Built solo for the **Summer Practice Hackathon 2026**.
 
-🌐 **Live demo:** [your-streamlit-url-here](hhttps://summer-practice-hackathon-2026-cgegucotprw9chtyfasd8f.streamlit.app/
+🌐 **Live demo:** [https://summer-practice-hackathon-2026-cgegucotprw9chtyfasd8f.streamlit.app/]
 📦 **Stack:** Streamlit · Python · SQLite · Gemini AI · Folium · bcrypt
 
 ---
